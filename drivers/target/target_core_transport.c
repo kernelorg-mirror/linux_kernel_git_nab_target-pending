@@ -626,6 +626,8 @@ static void transport_lun_remove_cmd(struct se_cmd *cmd)
 
 void transport_cmd_finish_abort(struct se_cmd *cmd, int remove)
 {
+	bool ack_kref = (cmd->se_cmd_flags & SCF_ACK_KREF);
+
 	if (cmd->se_cmd_flags & SCF_SE_LUN_CMD)
 		transport_lun_remove_cmd(cmd);
 	/*
@@ -637,7 +639,7 @@ void transport_cmd_finish_abort(struct se_cmd *cmd, int remove)
 
 	if (transport_cmd_check_stop_to_fabric(cmd))
 		return;
-	if (remove)
+	if (remove && ack_kref)
 		transport_put_cmd(cmd);
 }
 
@@ -2219,28 +2221,6 @@ static inline void transport_free_pages(struct se_cmd *cmd)
 }
 
 /**
- * transport_release_cmd - free a command
- * @cmd:       command to free
- *
- * This routine unconditionally frees a command, and reference counting
- * or list removal must be done in the caller.
- */
-static int transport_release_cmd(struct se_cmd *cmd)
-{
-	BUG_ON(!cmd->se_tfo);
-
-	if (cmd->se_cmd_flags & SCF_SCSI_TMR_CDB)
-		core_tmr_release_req(cmd->se_tmr_req);
-	if (cmd->t_task_cdb != cmd->__t_task_cdb)
-		kfree(cmd->t_task_cdb);
-	/*
-	 * If this cmd has been setup with target_get_sess_cmd(), drop
-	 * the kref and call ->release_cmd() in kref callback.
-	 */
-	return target_put_sess_cmd(cmd);
-}
-
-/**
  * transport_put_cmd - release a reference to a command
  * @cmd:       command to release
  *
@@ -2248,8 +2228,12 @@ static int transport_release_cmd(struct se_cmd *cmd)
  */
 static int transport_put_cmd(struct se_cmd *cmd)
 {
-	transport_free_pages(cmd);
-	return transport_release_cmd(cmd);
+	BUG_ON(!cmd->se_tfo);
+	/*
+	 * If this cmd has been setup with target_get_sess_cmd(), drop
+	 * the kref and call ->release_cmd() in kref callback.
+	 */
+	return target_put_sess_cmd(cmd);
 }
 
 void *transport_kmap_data_sg(struct se_cmd *cmd)
@@ -2456,7 +2440,7 @@ int transport_generic_free_cmd(struct se_cmd *cmd, int wait_for_tasks)
 		if (wait_for_tasks && (cmd->se_cmd_flags & SCF_SCSI_TMR_CDB))
 			 transport_wait_for_tasks(cmd);
 
-		ret = transport_release_cmd(cmd);
+		ret = transport_put_cmd(cmd);
 	} else {
 		if (wait_for_tasks)
 			transport_wait_for_tasks(cmd);
@@ -2495,8 +2479,10 @@ int target_get_sess_cmd(struct se_cmd *se_cmd, bool ack_kref)
 	 * fabric acknowledgement that requires two target_put_sess_cmd()
 	 * invocations before se_cmd descriptor release.
 	 */
-	if (ack_kref)
+	if (ack_kref) {
+		se_cmd->se_cmd_flags |= SCF_ACK_KREF;
 		kref_get(&se_cmd->cmd_kref);
+	}
 
 	spin_lock_irqsave(&se_sess->sess_cmd_lock, flags);
 	if (se_sess->sess_tearing_down) {
@@ -2514,6 +2500,16 @@ out:
 }
 EXPORT_SYMBOL(target_get_sess_cmd);
 
+static void target_free_cmd_mem(struct se_cmd *cmd)
+{
+	transport_free_pages(cmd);
+
+	if (cmd->se_cmd_flags & SCF_SCSI_TMR_CDB)
+		core_tmr_release_req(cmd->se_tmr_req);
+	if (cmd->t_task_cdb != cmd->__t_task_cdb)
+		kfree(cmd->t_task_cdb);
+}
+
 static void target_release_cmd_kref(struct kref *kref)
 		__releases(&se_cmd->se_sess->sess_cmd_lock)
 {
@@ -2522,17 +2518,20 @@ static void target_release_cmd_kref(struct kref *kref)
 
 	if (list_empty(&se_cmd->se_cmd_list)) {
 		spin_unlock(&se_sess->sess_cmd_lock);
+		target_free_cmd_mem(se_cmd);
 		se_cmd->se_tfo->release_cmd(se_cmd);
 		return;
 	}
 	if (se_sess->sess_tearing_down && se_cmd->cmd_wait_set) {
 		spin_unlock(&se_sess->sess_cmd_lock);
+		target_free_cmd_mem(se_cmd);
 		complete(&se_cmd->cmd_wait_comp);
 		return;
 	}
 	list_del(&se_cmd->se_cmd_list);
 	spin_unlock(&se_sess->sess_cmd_lock);
 
+	target_free_cmd_mem(se_cmd);
 	se_cmd->se_tfo->release_cmd(se_cmd);
 }
 
