@@ -576,7 +576,7 @@ static int transport_cmd_check_stop(struct se_cmd *cmd, bool remove_from_lists,
 	 * this command for frontend exceptions.
 	 */
 	if (cmd->transport_state & CMD_T_STOP) {
-		pr_debug("%s:%d CMD_T_STOP for ITT: 0x%08llx\n",
+		printk_ratelimited("%s:%d CMD_T_STOP for ITT: 0x%08llx\n",
 			__func__, __LINE__, cmd->tag);
 
 		spin_unlock_irqrestore(&cmd->t_state_lock, flags);
@@ -2568,6 +2568,11 @@ void target_sess_cmd_list_set_waiting(struct se_session *se_sess)
 	list_for_each_entry(se_cmd, &se_sess->sess_wait_list, se_cmd_list) {
 		rc = kref_get_unless_zero(&se_cmd->cmd_kref);
 		if (rc) {
+			 printk_ratelimited("Setting cmd_wait_set=1 for"
+				" se_cmd: %p t_state: %d, fabric state:"
+				" %d\n", se_cmd, se_cmd->t_state,
+				se_cmd->se_tfo->get_cmd_state(se_cmd));
+
 			se_cmd->cmd_wait_set = 1;
 			spin_lock(&se_cmd->t_state_lock);
 			se_cmd->transport_state |= CMD_T_FABRIC_STOP;
@@ -2592,7 +2597,7 @@ void target_wait_for_sess_cmds(struct se_session *se_sess)
 				&se_sess->sess_wait_list, se_cmd_list) {
 		list_del_init(&se_cmd->se_cmd_list);
 
-		pr_debug("Waiting for se_cmd: %p t_state: %d, fabric state:"
+		printk_ratelimited("Waiting for se_cmd: %p t_state: %d, fabric state:"
 			" %d\n", se_cmd, se_cmd->t_state,
 			se_cmd->se_tfo->get_cmd_state(se_cmd));
 
@@ -2601,12 +2606,17 @@ void target_wait_for_sess_cmds(struct se_session *se_sess)
 		spin_unlock_irqrestore(&se_cmd->t_state_lock, flags);
 
 		if (!target_put_sess_cmd(se_cmd)) {
+			printk_ratelimited("Zero put_sess_cmd: se_cmd: %p t_state: %d"
+				" fabric state: %d krefcount %d\n", se_cmd, se_cmd->t_state,
+				se_cmd->se_tfo->get_cmd_state(se_cmd),
+				atomic_read(&se_cmd->cmd_kref.refcount));
+
 			if (tas)
 				target_put_sess_cmd(se_cmd);
 		}
 
 		wait_for_completion(&se_cmd->cmd_wait_comp);
-		pr_debug("After cmd_wait_comp: se_cmd: %p t_state: %d"
+		printk_ratelimited("After cmd_wait_comp: se_cmd: %p t_state: %d"
 			" fabric state: %d\n", se_cmd, se_cmd->t_state,
 			se_cmd->se_tfo->get_cmd_state(se_cmd));
 
@@ -2661,7 +2671,7 @@ __transport_wait_for_tasks(struct se_cmd *cmd, bool fabric_stop,
 
 	cmd->transport_state |= CMD_T_STOP;
 
-	pr_debug("wait_for_tasks: Stopping %p ITT: 0x%08llx i_state: %d,"
+	printk_ratelimited("wait_for_tasks: Stopping %p ITT: 0x%08llx i_state: %d,"
 		 " t_state: %d, CMD_T_STOP\n", cmd, cmd->tag,
 		 cmd->se_tfo->get_cmd_state(cmd), cmd->t_state);
 
@@ -2672,7 +2682,7 @@ __transport_wait_for_tasks(struct se_cmd *cmd, bool fabric_stop,
 	spin_lock_irqsave(&cmd->t_state_lock, *flags);
 	cmd->transport_state &= ~(CMD_T_ACTIVE | CMD_T_STOP);
 
-	pr_debug("wait_for_tasks: Stopped wait_for_completion(&cmd->"
+	printk_ratelimited("wait_for_tasks: Stopped wait_for_completion(&cmd->"
 		 "t_transport_stop_comp) for ITT: 0x%08llx\n", cmd->tag);
 
 	return true;

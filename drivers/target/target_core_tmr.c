@@ -128,13 +128,13 @@ static bool __target_check_io_state(struct se_cmd *se_cmd,
 	 */
 	spin_lock(&se_cmd->t_state_lock);
 	if (se_cmd->transport_state & (CMD_T_COMPLETE | CMD_T_FABRIC_STOP)) {
-		pr_debug("Attempted to abort io tag: %llu already complete or"
+		printk_ratelimited("Attempted to abort io tag: %llu already complete or"
 			" fabric stop, skipping\n", se_cmd->tag);
 		spin_unlock(&se_cmd->t_state_lock);
 		return false;
 	}
 	if (sess->sess_tearing_down || se_cmd->cmd_wait_set) {
-		pr_debug("Attempted to abort io tag: %llu already shutdown,"
+		printk_ratelimited("Attempted to abort io tag: %llu already shutdown,"
 			" skipping\n", se_cmd->tag);
 		spin_unlock(&se_cmd->t_state_lock);
 		return false;
@@ -279,7 +279,7 @@ static void core_tmr_drain_tmr_list(
 		list_del_init(&tmr_p->tmr_list);
 		cmd = tmr_p->task_cmd;
 
-		pr_debug("LUN_RESET: %s releasing TMR %p Function: 0x%02x,"
+		printk_ratelimited("LUN_RESET: %s releasing TMR %p Function: 0x%02x,"
 			" Response: 0x%02x, t_state: %d\n",
 			(preempt_and_abort_list) ? "Preempt" : "", tmr_p,
 			tmr_p->function, tmr_p->response, cmd->t_state);
@@ -361,14 +361,14 @@ static void core_tmr_drain_state_list(
 		cmd = list_entry(drain_task_list.next, struct se_cmd, state_list);
 		list_del_init(&cmd->state_list);
 
-		pr_debug("LUN_RESET: %s cmd: %p"
+		printk_ratelimited("LUN_RESET: %s cmd: %p"
 			" ITT/CmdSN: 0x%08llx/0x%08x, i_state: %d, t_state: %d"
 			"cdb: 0x%02x\n",
 			(preempt_and_abort_list) ? "Preempt" : "", cmd,
 			cmd->tag, 0,
 			cmd->se_tfo->get_cmd_state(cmd), cmd->t_state,
 			cmd->t_task_cdb[0]);
-		pr_debug("LUN_RESET: ITT[0x%08llx] - pr_res_key: 0x%016Lx"
+		printk_ratelimited("LUN_RESET: ITT[0x%08llx] - pr_res_key: 0x%016Lx"
 			" -- CMD_T_ACTIVE: %d"
 			" CMD_T_STOP: %d CMD_T_SENT: %d\n",
 			cmd->tag, cmd->pr_res_key,
@@ -422,13 +422,13 @@ int core_tmr_lun_reset(
 		tmr_nacl = tmr_sess->se_node_acl;
 		tmr_tpg = tmr_sess->se_tpg;
 		if (tmr_nacl && tmr_tpg) {
-			pr_debug("LUN_RESET: TMR caller fabric: %s"
+			printk_ratelimited("LUN_RESET: TMR caller fabric: %s"
 				" initiator port %s\n",
 				tmr_tpg->se_tpg_tfo->get_fabric_name(),
 				tmr_nacl->initiatorname);
 		}
 	}
-	pr_debug("LUN_RESET: %s starting for [%s], tas: %d\n",
+	printk_ratelimited("LUN_RESET: %s starting for [%s], tas: %d\n",
 		(preempt_and_abort_list) ? "Preempt" : "TMR",
 		dev->transport->name, tas);
 
@@ -446,12 +446,12 @@ int core_tmr_lun_reset(
 		dev->dev_reserved_node_acl = NULL;
 		dev->dev_reservation_flags &= ~DRF_SPC2_RESERVATIONS;
 		spin_unlock(&dev->dev_reservation_lock);
-		pr_debug("LUN_RESET: SCSI-2 Released reservation\n");
+		printk_ratelimited("LUN_RESET: SCSI-2 Released reservation\n");
 	}
 
 	atomic_long_inc(&dev->num_resets);
 
-	pr_debug("LUN_RESET: %s for [%s] Complete\n",
+	printk_ratelimited("LUN_RESET: %s for [%s] Complete\n",
 			(preempt_and_abort_list) ? "Preempt" : "TMR",
 			dev->transport->name);
 	return 0;
