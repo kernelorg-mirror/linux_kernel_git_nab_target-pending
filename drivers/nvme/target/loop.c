@@ -42,6 +42,7 @@ struct nvme_loop_iod {
 	struct nvme_loop_queue	*queue;
 	struct work_struct	work;
 	struct sg_table		sg_table;
+	struct scatterlist	meta_sg;
 	struct scatterlist	first_sgl[];
 };
 
@@ -199,6 +200,23 @@ static int nvme_loop_queue_rq(struct blk_mq_hw_ctx *hctx,
 		iod->req.sg = iod->sg_table.sgl;
 		iod->req.sg_cnt = blk_rq_map_sg(req->q, req, iod->sg_table.sgl);
 		BUG_ON(iod->req.sg_cnt > req->nr_phys_segments);
+	}
+
+	if (blk_integrity_rq(req)) {
+		int count;
+
+		if (blk_rq_count_integrity_sg(hctx->queue, req->bio) != 1)
+			BUG_ON(1);
+
+		sg_init_table(&iod->meta_sg, 1);
+		count = blk_rq_map_integrity_sg(hctx->queue, req->bio,
+						&iod->meta_sg);
+
+		iod->req.prot_sg = &iod->meta_sg;
+		iod->req.prot_sg_cnt = 1;
+
+		pr_debug("nvme/loop: Set prot_sg %p and prot_sg_cnt: %d\n",
+			iod->req.prot_sg, iod->req.prot_sg_cnt);
 	}
 
 	iod->cmd.common.command_id = req->tag;
