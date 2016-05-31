@@ -41,15 +41,13 @@
 struct nvmet_ns {
 	struct list_head	dev_link;
 	struct percpu_ref	ref;
-	struct block_device	*bdev;
+	struct se_device __rcu	*dev;
 	u32			nsid;
 	u32			blksize_shift;
 	loff_t			size;
 	u8			nguid[16];
 
 	struct nvmet_subsys	*subsys;
-	const char		*device_path;
-
 	struct config_group	device_group;
 	struct config_group	group;
 
@@ -330,7 +328,7 @@ void nvmet_subsys_put(struct nvmet_subsys *subsys);
 
 struct nvmet_ns *nvmet_find_namespace(struct nvmet_ctrl *ctrl, __le32 nsid);
 void nvmet_put_namespace(struct nvmet_ns *ns);
-int nvmet_ns_enable(struct nvmet_ns *ns);
+int nvmet_ns_enable(struct nvmet_ns *ns, struct se_device *dev);
 void nvmet_ns_disable(struct nvmet_ns *ns);
 struct nvmet_ns *nvmet_ns_alloc(struct nvmet_subsys *subsys, u32 nsid);
 void nvmet_ns_free(struct nvmet_ns *ns);

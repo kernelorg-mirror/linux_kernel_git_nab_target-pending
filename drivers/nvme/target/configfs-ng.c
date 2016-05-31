@@ -470,8 +470,7 @@ static int nvmet_ns_link(struct config_item *ns_ci, struct config_item *dev_ci)
 		return -ENOSYS;
 	}
 
-	// XXX: Pass in struct se_device into nvmet_ns_enable
-	return nvmet_ns_enable(ns);
+	return nvmet_ns_enable(ns, dev);
 }
 
 static int nvmet_ns_unlink(struct config_item *ns_ci, struct config_item *dev_ci)

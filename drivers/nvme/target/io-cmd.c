@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include "nvmet.h"
 
+#if 0
 static void nvmet_bio_done(struct bio *bio)
 {
 	struct nvmet_req *req = bio->bi_private;
@@ -26,6 +27,7 @@ static void nvmet_bio_done(struct bio *bio)
 	if (bio != &req->inline_bio)
 		bio_put(bio);
 }
+#endif
 
 static inline u32 nvmet_rw_len(struct nvmet_req *req)
 {
@@ -33,6 +35,7 @@ static inline u32 nvmet_rw_len(struct nvmet_req *req)
 			req->ns->blksize_shift;
 }
 
+#if 0
 static void nvmet_inline_bio_init(struct nvmet_req *req)
 {
 	struct bio *bio = &req->inline_bio;
@@ -41,21 +44,23 @@ static void nvmet_inline_bio_init(struct nvmet_req *req)
 	bio->bi_max_vecs = NVMET_MAX_INLINE_BIOVEC;
 	bio->bi_io_vec = req->inline_bvec;
 }
+#endif
 
 static void nvmet_execute_rw(struct nvmet_req *req)
 {
+#if 0
 	int sg_cnt = req->sg_cnt;
 	struct scatterlist *sg;
 	struct bio *bio;
 	sector_t sector;
 	blk_qc_t cookie;
 	int rw, i;
-
+#endif
 	if (!req->sg_cnt) {
 		nvmet_req_complete(req, 0);
 		return;
 	}
-
+#if 0
 	if (req->cmd->rw.opcode == nvme_cmd_write) {
 		if (req->cmd->rw.control & cpu_to_le16(NVME_RW_FUA))
 			rw = WRITE_FUA;
@@ -95,10 +100,12 @@ static void nvmet_execute_rw(struct nvmet_req *req)
 	cookie = submit_bio(rw, bio);
 
 	blk_poll(bdev_get_queue(req->ns->bdev), cookie);
+#endif
 }
 
 static void nvmet_execute_flush(struct nvmet_req *req)
 {
+#if 0
 	struct bio *bio;
 
 	nvmet_inline_bio_init(req);
@@ -109,8 +116,10 @@ static void nvmet_execute_flush(struct nvmet_req *req)
 	bio->bi_end_io = nvmet_bio_done;
 
 	submit_bio(WRITE_FLUSH, bio);
+#endif
 }
 
+#if 0
 static u16 nvmet_discard_range(struct nvmet_ns *ns,
 		struct nvme_dsm_range *range, int type, struct bio **bio)
 {
@@ -119,11 +128,14 @@ static u16 nvmet_discard_range(struct nvmet_ns *ns,
 			le32_to_cpu(range->nlb) << (ns->blksize_shift - 9),
 			GFP_KERNEL, type, bio))
 		return NVME_SC_INTERNAL | NVME_SC_DNR;
+
 	return 0;
 }
+#endif
 
 static void nvmet_execute_discard(struct nvmet_req *req)
 {
+#if 0
 	struct nvme_dsm_range range;
 	struct bio *bio = NULL;
 	int type = REQ_WRITE | REQ_DISCARD, i;
@@ -152,6 +164,7 @@ static void nvmet_execute_discard(struct nvmet_req *req)
 	} else {
 		nvmet_req_complete(req, status);
 	}
+#endif
 }
 
 static void nvmet_execute_dsm(struct nvmet_req *req)
