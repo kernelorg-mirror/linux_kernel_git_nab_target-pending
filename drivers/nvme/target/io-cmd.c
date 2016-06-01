@@ -109,18 +109,21 @@ static void nvmet_execute_rw(struct nvmet_req *req)
 
 static void nvmet_execute_flush(struct nvmet_req *req)
 {
-#if 0
-	struct bio *bio;
+	struct target_iostate *ios = &req->t_iostate;
+	struct se_device *dev = rcu_dereference_raw(req->ns->dev);
+	struct sbc_ops *sbc_ops = dev->transport->sbc_ops;
+	sense_reason_t rc;
 
-	nvmet_inline_bio_init(req);
-	bio = &req->inline_bio;
+	if (!sbc_ops || !sbc_ops->execute_sync_cache) {
+		nvmet_req_complete(req, NVME_SC_INTERNAL | NVME_SC_DNR);
+		return;
+	}
 
-	bio->bi_bdev = req->ns->bdev;
-	bio->bi_private = req;
-	bio->bi_end_io = nvmet_bio_done;
+	ios->se_dev = dev;
+	ios->iomem = NULL;
+	ios->t_comp_func = &nvmet_complete_ios;
 
-	submit_bio(WRITE_FLUSH, bio);
-#endif
+	rc = sbc_ops->execute_sync_cache(ios, false);
 }
 
 #if 0
