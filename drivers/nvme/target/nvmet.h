@@ -25,6 +25,7 @@
 #include <linux/configfs.h>
 #include <linux/rcupdate.h>
 #include <linux/blkdev.h>
+#include <target/target_core_base.h>
 
 #define NVMET_ASYNC_EVENTS		4
 #define NVMET_ERROR_LOG_SLOTS		128
@@ -261,6 +262,12 @@ struct nvmet_req {
 	struct bio_vec		inline_bvec[NVMET_MAX_INLINE_BIOVEC];
 	int			sg_cnt;
 	size_t			data_len;
+
+	struct scatterlist	*prot_sg;
+	int			prot_sg_cnt;
+
+	struct target_iostate	t_iostate;
+	struct target_iomem	t_iomem;
 
 	struct nvmet_port	*port;
 
