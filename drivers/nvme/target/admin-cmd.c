@@ -200,6 +200,7 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 {
 	struct nvmet_ns *ns;
 	struct nvme_id_ns *id;
+	struct se_device *dev;
 	u16 status = 0;
 
 	ns = nvmet_find_namespace(req->sq->ctrl, req->cmd->identify.nsid);
@@ -227,6 +228,22 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 	 */
 	id->nlbaf = 0;
 	id->flbas = 0;
+
+	/* Populate bits for T10-PI from se_device backend */
+	rcu_read_lock();
+	dev = rcu_dereference(ns->dev);
+	if (dev && dev->dev_attrib.pi_prot_type) {
+		int pi_prot_type = dev->dev_attrib.pi_prot_type;
+
+		id->lbaf[0].ms = cpu_to_le16(sizeof(struct t10_pi_tuple));
+		printk("nvmet_set_id_ns: ms: %u\n", id->lbaf[0].ms);
+
+		if (pi_prot_type == 1)
+			id->dps = NVME_NS_DPC_PI_TYPE1;
+		else if (pi_prot_type == 3)
+			id->dps = NVME_NS_DPC_PI_TYPE3;
+	}
+	rcu_read_unlock();
 
 	/*
 	 * Our namespace might always be shared.  Not just with other
