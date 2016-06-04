@@ -441,7 +441,9 @@ static int nvmet_port_subsys_allow_link(struct config_item *parent,
 	if (!link)
 		return -ENOMEM;
 	link->subsys = subsys;
-
+#if 1
+	BUG_ON(1);
+#else
 	down_write(&nvmet_config_sem);
 	ret = -EEXIST;
 	list_for_each_entry(p, &port->subsystems, entry) {
@@ -458,6 +460,7 @@ static int nvmet_port_subsys_allow_link(struct config_item *parent,
 	list_add_tail(&link->entry, &port->subsystems);
 	nvmet_genctr++;
 	up_write(&nvmet_config_sem);
+#endif
 	return 0;
 
 out_free_link:
@@ -469,6 +472,7 @@ out_free_link:
 static int nvmet_port_subsys_drop_link(struct config_item *parent,
 		struct config_item *target)
 {
+#if 0
 	struct nvmet_port *port = to_nvmet_port(parent->ci_parent);
 	struct nvmet_subsys *subsys = to_subsys(target);
 	struct nvmet_subsys_link *p;
@@ -487,7 +491,9 @@ found:
 	if (list_empty(&port->subsystems))
 		nvmet_disable_port(port);
 	up_write(&nvmet_config_sem);
+
 	kfree(p);
+#endif
 	return 0;
 }
 
@@ -504,6 +510,7 @@ static struct config_item_type nvmet_port_subsys_type = {
 static int nvmet_allowed_hosts_allow_link(struct config_item *parent,
 		struct config_item *target)
 {
+#if 0
 	struct nvmet_subsys *subsys = to_subsys(parent->ci_parent);
 	struct nvmet_host *host;
 	struct nvmet_host_link *link, *p;
@@ -540,11 +547,13 @@ out_free_link:
 	up_write(&nvmet_config_sem);
 	kfree(link);
 	return ret;
+#endif
 }
 
 static int nvmet_allowed_hosts_drop_link(struct config_item *parent,
 		struct config_item *target)
 {
+#if 0
 	struct nvmet_subsys *subsys = to_subsys(parent->ci_parent);
 	struct nvmet_host *host = to_host(target);
 	struct nvmet_host_link *p;
@@ -563,6 +572,7 @@ found:
 	up_write(&nvmet_config_sem);
 	kfree(p);
 	return 0;
+#endif
 }
 
 static struct configfs_item_operations nvmet_allowed_hosts_item_ops = {

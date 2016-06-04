@@ -147,6 +147,7 @@ EXPORT_SYMBOL_GPL(nvmet_unregister_transport);
 
 int nvmet_enable_port(struct nvmet_port *port)
 {
+#if 0
 	struct nvmet_fabrics_ops *ops;
 	int ret;
 
@@ -175,11 +176,13 @@ int nvmet_enable_port(struct nvmet_port *port)
 	}
 
 	port->enabled = true;
+#endif
 	return 0;
 }
 
 void nvmet_disable_port(struct nvmet_port *port)
 {
+#if 0
 	struct nvmet_fabrics_ops *ops;
 
 	lockdep_assert_held(&nvmet_config_sem);
@@ -189,6 +192,7 @@ void nvmet_disable_port(struct nvmet_port *port)
 	ops = nvmet_transports[port->disc_addr.trtype];
 	ops->remove_port(port);
 	module_put(ops->owner);
+#endif
 }
 
 struct nvmet_fabrics_ops *
@@ -681,15 +685,19 @@ out:
 static bool __nvmet_host_allowed(struct nvmet_subsys *subsys,
 		const char *hostnqn)
 {
-	struct nvmet_host_link *p;
+	struct nvmet_host *h;
 
 	if (subsys->allow_any_host)
 		return true;
 
-	list_for_each_entry(p, &subsys->hosts, entry) {
-		if (!strcmp(nvmet_host_name(p->host), hostnqn))
+	mutex_lock(&subsys->hosts_mutex);
+	list_for_each_entry(h, &subsys->hosts, node) {
+		if (!strcmp(nvmet_host_name(h), hostnqn)) {
+			mutex_unlock(&subsys->hosts_mutex);
 			return true;
+		}
 	}
+	mutex_unlock(&subsys->hosts_mutex);
 
 	return false;
 }
@@ -697,10 +705,21 @@ static bool __nvmet_host_allowed(struct nvmet_subsys *subsys,
 static bool nvmet_host_discovery_allowed(struct nvmet_req *req,
 		const char *hostnqn)
 {
-	struct nvmet_subsys_link *s;
+	struct nvmet_port_binding *pb;
+	struct nvmet_port *port = req->port;
+	struct nvmet_subsys *subsys;
 
-	list_for_each_entry(s, &req->port->subsystems, entry) {
-		if (__nvmet_host_allowed(s->subsys, hostnqn))
+	if (!port)
+		return false;
+
+	lockdep_assert_held(&port->port_binding_mutex);
+
+	list_for_each_entry(pb, &port->port_binding_list, node) {
+		subsys = pb->nf_subsys;
+		if (!subsys)
+			continue;
+
+		if (__nvmet_host_allowed(subsys, hostnqn))
 			return true;
 	}
 
@@ -710,8 +729,6 @@ static bool nvmet_host_discovery_allowed(struct nvmet_req *req,
 bool nvmet_host_allowed(struct nvmet_req *req, struct nvmet_subsys *subsys,
 		const char *hostnqn)
 {
-	lockdep_assert_held(&nvmet_config_sem);
-
 	if (subsys->type == NVME_NQN_DISC)
 		return nvmet_host_discovery_allowed(req, hostnqn);
 	else
@@ -721,13 +738,14 @@ bool nvmet_host_allowed(struct nvmet_req *req, struct nvmet_subsys *subsys,
 u16 nvmet_alloc_ctrl(const char *subsysnqn, const char *hostnqn,
 		struct nvmet_req *req, u32 kato, struct nvmet_ctrl **ctrlp)
 {
+	struct nvmet_port *port = req->port;
 	struct nvmet_subsys *subsys;
 	struct nvmet_ctrl *ctrl;
 	int ret;
 	u16 status;
 
 	status = NVME_SC_CONNECT_INVALID_PARAM | NVME_SC_DNR;
-	subsys = nvmet_find_get_subsys(req->port, subsysnqn);
+	subsys = nvmet_find_get_subsys(port, subsysnqn);
 	if (!subsys) {
 		pr_warn("connect request for invalid subsystem %s!\n",
 			subsysnqn);
@@ -736,15 +754,16 @@ u16 nvmet_alloc_ctrl(const char *subsysnqn, const char *hostnqn,
 	}
 
 	status = NVME_SC_CONNECT_INVALID_PARAM | NVME_SC_DNR;
-	down_read(&nvmet_config_sem);
+
+	mutex_lock(&port->port_binding_mutex);
 	if (!nvmet_host_allowed(req, subsys, hostnqn)) {
 		pr_info("connect by host %s for subsystem %s not allowed\n",
 			hostnqn, subsysnqn);
 		req->rsp->result = IPO_IATTR_CONNECT_DATA(hostnqn);
-		up_read(&nvmet_config_sem);
+		mutex_unlock(&port->port_binding_mutex);
 		goto out_put_subsystem;
 	}
-	up_read(&nvmet_config_sem);
+	mutex_unlock(&port->port_binding_mutex);
 
 	status = NVME_SC_INTERNAL;
 	ctrl = kzalloc(sizeof(*ctrl), GFP_KERNEL);
@@ -872,10 +891,29 @@ void nvmet_ctrl_fatal_error(struct nvmet_ctrl *ctrl)
 }
 EXPORT_SYMBOL_GPL(nvmet_ctrl_fatal_error);
 
+void nvmet_port_binding_enable(struct nvmet_port_binding *pb, struct nvmet_port *port)
+{
+	mutex_lock(&port->port_binding_mutex);
+	pb->enabled = true;
+	list_add_tail(&pb->node, &port->port_binding_list);
+	mutex_unlock(&port->port_binding_mutex);
+}
+EXPORT_SYMBOL_GPL(nvmet_port_binding_enable);
+
+void nvmet_port_binding_disable(struct nvmet_port_binding *pb, struct nvmet_port *port)
+{
+	mutex_lock(&port->port_binding_mutex);
+	pb->enabled = false;
+	list_del_init(&pb->node);
+	mutex_unlock(&port->port_binding_mutex);
+}
+EXPORT_SYMBOL_GPL(nvmet_port_binding_disable);
+
 static struct nvmet_subsys *nvmet_find_get_subsys(struct nvmet_port *port,
 		const char *subsysnqn)
 {
-	struct nvmet_subsys_link *p;
+	struct nvmet_port_binding *pb;
+	struct nvmet_subsys *subsys;
 
 	if (!port)
 		return NULL;
@@ -887,17 +925,22 @@ static struct nvmet_subsys *nvmet_find_get_subsys(struct nvmet_port *port,
 		return nvmet_disc_subsys;
 	}
 
-	down_read(&nvmet_config_sem);
-	list_for_each_entry(p, &port->subsystems, entry) {
-		if (!strncmp(p->subsys->subsysnqn, subsysnqn,
-				NVMF_NQN_SIZE)) {
-			if (!kref_get_unless_zero(&p->subsys->ref))
-				break;
-			up_read(&nvmet_config_sem);
-			return p->subsys;
+	mutex_lock(&port->port_binding_mutex);
+	list_for_each_entry(pb, &port->port_binding_list, node) {
+		subsys = pb->nf_subsys;
+		if (!subsys)
+			continue;
+
+		if (strcmp(subsys->subsysnqn, subsysnqn))
+			continue;
+
+		if (kref_get_unless_zero(&subsys->ref)) {	
+			mutex_unlock(&port->port_binding_mutex);
+			return subsys;
 		}
 	}
-	up_read(&nvmet_config_sem);
+	mutex_unlock(&port->port_binding_mutex);
+
 	return NULL;
 }
 
@@ -935,12 +978,12 @@ struct nvmet_subsys *nvmet_subsys_alloc(const char *subsysnqn,
 	kref_init(&subsys->ref);
 
 	mutex_init(&subsys->lock);
+	mutex_init(&subsys->hosts_mutex);
 	INIT_LIST_HEAD(&subsys->namespaces);
 	INIT_LIST_HEAD(&subsys->ctrls);
+	INIT_LIST_HEAD(&subsys->hosts);
 
 	ida_init(&subsys->cntlid_ida);
-
-	INIT_LIST_HEAD(&subsys->hosts);
 
 	return subsys;
 }

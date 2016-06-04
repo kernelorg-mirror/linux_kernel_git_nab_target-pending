@@ -79,6 +79,8 @@ struct nvmet_sq {
 	struct completion	free_done;
 };
 
+struct nvmet_port_binding;
+
 /**
  * struct nvmet_port -	Common structure to keep port
  *				information for the target.
@@ -98,11 +100,37 @@ struct nvmet_port {
 	struct list_head		referrals;
 	void				*priv;
 	bool				enabled;
+
+	struct nvmet_subsys		*nf_subsys;
+	struct nvmet_fabrics_ops	*nf_ops;
+
+	struct mutex			port_binding_mutex;
+	struct list_head		port_binding_list;
+};
+
+struct nvmet_port_binding {
+	bool				enabled;
+	struct nvmf_disc_rsp_page_entry	disc_addr;
+
+	struct nvmet_port		*port;
+	struct nvmet_subsys		*nf_subsys;
+	struct nvmet_fabrics_ops	*nf_ops;
+
+	struct list_head		node;
+	struct list_head		subsys_node;
+	struct config_group		group;
 };
 
 static inline struct nvmet_port *to_nvmet_port(struct config_item *item)
 {
 	return container_of(to_config_group(item), struct nvmet_port,
+			group);
+}
+
+static inline struct nvmet_port_binding *
+to_nvmet_port_binding(struct config_item *item)
+{
+	return container_of(to_config_group(item), struct nvmet_port_binding,
 			group);
 }
 
@@ -147,6 +175,7 @@ struct nvmet_subsys {
 	struct list_head	ctrls;
 	struct ida		cntlid_ida;
 
+	struct mutex		hosts_mutex;
 	struct list_head	hosts;
 	bool			allow_any_host;
 
@@ -158,7 +187,8 @@ struct nvmet_subsys {
 	struct config_group	group;
 
 	struct config_group	namespaces_group;
-	struct config_group	allowed_hosts_group;
+	struct config_group	ports_group;
+	struct config_group	hosts_group;
 };
 
 static inline struct nvmet_subsys *to_subsys(struct config_item *item)
@@ -173,7 +203,17 @@ static inline struct nvmet_subsys *namespaces_to_subsys(
 			namespaces_group);
 }
 
+static inline struct nvmet_subsys *ports_to_subsys(
+		struct config_item *item)
+{
+	return container_of(to_config_group(item), struct nvmet_subsys,
+			ports_group);
+}
+
 struct nvmet_host {
+	struct nvmet_subsys	*subsys;
+
+	struct list_head	node;
 	struct config_group	group;
 };
 
@@ -205,8 +245,8 @@ struct nvmet_fabrics_ops {
 	unsigned int msdbd;
 	bool has_keyed_sgls : 1;
 	void (*queue_response)(struct nvmet_req *req);
-	int (*add_port)(struct nvmet_port *port);
-	void (*remove_port)(struct nvmet_port *port);
+	int (*add_port)(struct nvmet_port_binding *pb);
+	void (*remove_port)(struct nvmet_port_binding *pb);
 	void (*delete_ctrl)(struct nvmet_ctrl *ctrl);
 };
 
@@ -274,6 +314,8 @@ void nvmet_sq_destroy(struct nvmet_sq *sq);
 int nvmet_sq_init(struct nvmet_sq *sq);
 
 void nvmet_ctrl_fatal_error(struct nvmet_ctrl *ctrl);
+void nvmet_port_binding_enable(struct nvmet_port_binding *pb, struct nvmet_port *port);
+void nvmet_port_binding_disable(struct nvmet_port_binding *pb, struct nvmet_port *port);
 
 void nvmet_update_cc(struct nvmet_ctrl *ctrl, u32 new);
 u16 nvmet_alloc_ctrl(const char *subsysnqn, const char *hostnqn,
@@ -326,7 +368,7 @@ int __init nvmet_init_discovery(void);
 void nvmet_exit_discovery(void);
 
 extern struct nvmet_subsys *nvmet_disc_subsys;
-extern u64 nvmet_genctr;
+extern atomic_long_t nvmet_genctr;
 extern struct rw_semaphore nvmet_config_sem;
 
 bool nvmet_host_allowed(struct nvmet_req *req, struct nvmet_subsys *subsys,

@@ -18,7 +18,7 @@
 
 struct nvmet_subsys *nvmet_disc_subsys;
 
-u64 nvmet_genctr;
+atomic_long_t nvmet_genctr;
 
 void nvmet_referral_enable(struct nvmet_port *parent, struct nvmet_port *port)
 {
@@ -26,7 +26,7 @@ void nvmet_referral_enable(struct nvmet_port *parent, struct nvmet_port *port)
 	if (list_empty(&port->entry)) {
 		list_add_tail(&port->entry, &parent->referrals);
 		port->enabled = true;
-		nvmet_genctr++;
+		atomic64_inc(&nvmet_genctr);
 	}
 	up_write(&nvmet_config_sem);
 }
@@ -37,7 +37,7 @@ void nvmet_referral_disable(struct nvmet_port *port)
 	if (!list_empty(&port->entry)) {
 		port->enabled = false;
 		list_del_init(&port->entry);
-		nvmet_genctr++;
+		atomic64_inc(&nvmet_genctr);
 	}
 	up_write(&nvmet_config_sem);
 }
@@ -69,8 +69,8 @@ static void nvmet_execute_get_disc_log_page(struct nvmet_req *req)
 	size_t data_len = nvmet_get_log_page_len(req->cmd);
 	size_t alloc_len = max(data_len, sizeof(*hdr));
 	int residual_len = data_len - sizeof(*hdr);
-	struct nvmet_subsys_link *p;
-	struct nvmet_port *r;
+	struct nvmet_port *port = req->port;
+	struct nvmet_port_binding *pb;
 	u32 numrec = 0;
 	u16 status = 0;
 
@@ -84,7 +84,7 @@ static void nvmet_execute_get_disc_log_page(struct nvmet_req *req)
 		status = NVME_SC_INTERNAL;
 		goto out;
 	}
-
+#if 0
 	down_read(&nvmet_config_sem);
 	list_for_each_entry(p, &req->port->subsystems, entry) {
 		if (!nvmet_host_allowed(req, p->subsys, ctrl->hostnqn))
@@ -113,7 +113,26 @@ static void nvmet_execute_get_disc_log_page(struct nvmet_req *req)
 	hdr->recfmt = cpu_to_le16(0);
 
 	up_read(&nvmet_config_sem);
+#else
+	mutex_lock(&port->port_binding_mutex);
+	list_for_each_entry(pb, &port->port_binding_list, node) {
+		if (!nvmet_host_allowed(req, pb->nf_subsys, ctrl->hostnqn))
+			continue;
 
+		if (residual_len >= entry_size) {
+			nvmet_format_discovery_entry(hdr, port,
+					pb->nf_subsys->subsysnqn,
+					NVME_NQN_NVME, numrec);
+			residual_len -= entry_size;
+		}
+		numrec++;
+	}
+	hdr->genctr = cpu_to_le64(atomic64_read(&nvmet_genctr));
+	hdr->numrec = cpu_to_le64(numrec);
+	hdr->recfmt = cpu_to_le16(0);
+
+	mutex_unlock(&port->port_binding_mutex);
+#endif
 	status = nvmet_copy_to_sgl(req, 0, hdr, data_len);
 	kfree(hdr);
 out:
