@@ -299,6 +299,10 @@ void nvmet_unregister_transport(struct nvmet_fabrics_ops *ops);
 int nvmet_enable_port(struct nvmet_port *port);
 void nvmet_disable_port(struct nvmet_port *port);
 
+struct nvmet_fabrics_ops *nvmet_get_transport(
+		struct nvmf_disc_rsp_page_entry *disc_addr);
+void nvmet_put_transport(struct nvmf_disc_rsp_page_entry *disc_addr);;
+
 void nvmet_referral_enable(struct nvmet_port *parent, struct nvmet_port *port);
 void nvmet_referral_disable(struct nvmet_port *port);
 

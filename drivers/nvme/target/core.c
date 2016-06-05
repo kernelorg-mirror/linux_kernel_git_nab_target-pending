@@ -191,6 +191,38 @@ void nvmet_disable_port(struct nvmet_port *port)
 	module_put(ops->owner);
 }
 
+struct nvmet_fabrics_ops *
+nvmet_get_transport(struct nvmf_disc_rsp_page_entry *disc_addr)
+{
+	struct nvmet_fabrics_ops *ops;
+
+	down_write(&nvmet_config_sem);
+	ops = nvmet_transports[disc_addr->trtype];
+	if (!ops) {
+		pr_err("transport type %d not supported\n",
+			disc_addr->trtype);
+		return ERR_PTR(-EINVAL);
+	}
+
+	if (!try_module_get(ops->owner)) {
+		up_write(&nvmet_config_sem);
+		return ERR_PTR(-EINVAL);
+	}
+	up_write(&nvmet_config_sem);
+
+	return ops;
+}
+
+void nvmet_put_transport(struct nvmf_disc_rsp_page_entry *disc_addr)
+{
+	struct nvmet_fabrics_ops *ops;
+
+	down_write(&nvmet_config_sem);
+	ops = nvmet_transports[disc_addr->trtype];
+	module_put(ops->owner);
+	up_write(&nvmet_config_sem);
+}
+
 static void nvmet_keep_alive_timer(struct work_struct *work)
 {
 	struct nvmet_ctrl *ctrl = container_of(to_delayed_work(work),
