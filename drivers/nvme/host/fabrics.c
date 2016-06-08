@@ -41,28 +41,36 @@ static struct nvmf_host *__nvmf_host_find(const char *hostnqn)
 	return NULL;
 }
 
-static struct nvmf_host *nvmf_host_add(const char *hostnqn)
+struct nvmf_host *nvmf_host_add(const char *hostnqn)
 {
 	struct nvmf_host *host;
 
 	mutex_lock(&nvmf_hosts_mutex);
-	host = __nvmf_host_find(hostnqn);
-	if (host)
-		goto out_unlock;
+	if (hostnqn) {
+		host = __nvmf_host_find(hostnqn);
+		if (host)
+			goto out_unlock;
+	}
 
 	host = kmalloc(sizeof(*host), GFP_KERNEL);
 	if (!host)
 		goto out_unlock;
 
 	kref_init(&host->ref);
-	memcpy(host->nqn, hostnqn, NVMF_NQN_SIZE);
 	uuid_le_gen(&host->id);
+
+	if (hostnqn)
+		memcpy(host->nqn, hostnqn, NVMF_NQN_SIZE);
+	else
+		snprintf(host->nqn, NVMF_NQN_SIZE,
+			"nqn.2014-08.org.nvmexpress:NVMf:uuid:%pUl", &host->id);
 
 	list_add_tail(&host->list, &nvmf_hosts);
 out_unlock:
 	mutex_unlock(&nvmf_hosts_mutex);
 	return host;
 }
+EXPORT_SYMBOL_GPL(nvmf_host_add);
 
 static struct nvmf_host *nvmf_host_default(void)
 {
