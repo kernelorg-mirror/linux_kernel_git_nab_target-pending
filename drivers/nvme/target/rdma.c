@@ -118,6 +118,17 @@ struct nvmet_rdma_device {
 	struct list_head	entry;
 };
 
+struct nvmet_rdma_port {
+	atomic_t		enabled;
+
+	struct rdma_cm_id	*cm_id;
+	struct nvmf_disc_rsp_page_entry port_addr;
+
+	struct list_head	node;
+	struct kref		ref;
+	struct nvmet_port	port;
+};
+
 static bool nvmet_rdma_use_srq;
 module_param_named(use_srq, nvmet_rdma_use_srq, bool, 0444);
 MODULE_PARM_DESC(use_srq, "Use shared receive queue.");
@@ -128,6 +139,9 @@ static DEFINE_MUTEX(nvmet_rdma_queue_mutex);
 
 static LIST_HEAD(device_list);
 static DEFINE_MUTEX(device_list_mutex);
+
+static LIST_HEAD(nvmet_rdma_ports);
+static DEFINE_MUTEX(nvmet_rdma_ports_mutex);
 
 static bool nvmet_rdma_execute_command(struct nvmet_rdma_rsp *rsp);
 static void nvmet_rdma_send_done(struct ib_cq *cq, struct ib_wc *wc);
@@ -1127,6 +1141,7 @@ static int nvmet_rdma_queue_connect(struct rdma_cm_id *cm_id,
 {
 	struct nvmet_rdma_device *ndev;
 	struct nvmet_rdma_queue *queue;
+	struct nvmet_rdma_port *rdma_port;
 	int ret = -EINVAL;
 
 	ndev = nvmet_rdma_find_get_device(cm_id);
@@ -1141,7 +1156,8 @@ static int nvmet_rdma_queue_connect(struct rdma_cm_id *cm_id,
 		ret = -ENOMEM;
 		goto put_device;
 	}
-	queue->port = cm_id->context;
+	rdma_port = cm_id->context;
+	queue->port = &rdma_port->port;
 
 	ret = nvmet_rdma_cm_accept(cm_id, queue, &event->param.conn);
 	if (ret)
@@ -1306,26 +1322,50 @@ static void nvmet_rdma_delete_ctrl(struct nvmet_ctrl *ctrl)
 		nvmet_rdma_queue_disconnect(queue);
 }
 
-static int nvmet_rdma_add_port(struct nvmet_port *port)
+static struct nvmet_rdma_port *nvmet_rdma_listen_cmid(struct nvmet_port_binding *pb)
 {
+	struct nvmet_rdma_port *rdma_port;
 	struct rdma_cm_id *cm_id;
 	struct sockaddr_in addr_in;
 	u16 port_in;
 	int ret;
 
-	ret = kstrtou16(port->disc_addr.trsvcid, 0, &port_in);
+	rdma_port = kzalloc(sizeof(*rdma_port), GFP_KERNEL);
+	if (!rdma_port)
+		return ERR_PTR(-ENOMEM);
+
+	INIT_LIST_HEAD(&rdma_port->node);
+	kref_init(&rdma_port->ref);
+	mutex_init(&rdma_port->port.port_binding_mutex);
+	INIT_LIST_HEAD(&rdma_port->port.port_binding_list);
+	rdma_port->port.priv = rdma_port;
+	rdma_port->port.nf_subsys = pb->nf_subsys;
+	rdma_port->port.nf_ops = pb->nf_ops;
+	pb->port = &rdma_port->port;
+
+	memcpy(&rdma_port->port_addr, &pb->disc_addr,
+		sizeof(struct nvmf_disc_rsp_page_entry));
+
+	nvmet_port_binding_enable(pb, &rdma_port->port);
+
+	mutex_lock(&nvmet_rdma_ports_mutex);
+	list_add_tail(&rdma_port->node, &nvmet_rdma_ports);
+	mutex_unlock(&nvmet_rdma_ports_mutex);
+
+	ret = kstrtou16(pb->disc_addr.trsvcid, 0, &port_in);
 	if (ret)
-		return ret;
+		goto out_port_disable;
 
 	addr_in.sin_family = AF_INET;
-	addr_in.sin_addr.s_addr = in_aton(port->disc_addr.traddr);
+	addr_in.sin_addr.s_addr = in_aton(pb->disc_addr.traddr);
 	addr_in.sin_port = htons(port_in);
 
-	cm_id = rdma_create_id(&init_net, nvmet_rdma_cm_handler, port,
+	cm_id = rdma_create_id(&init_net, nvmet_rdma_cm_handler, rdma_port,
 			RDMA_PS_TCP, IB_QPT_RC);
 	if (IS_ERR(cm_id)) {
 		pr_err("CM ID creation failed\n");
-		return PTR_ERR(cm_id);
+		ret = PTR_ERR(cm_id);
+		goto out_port_disable;
 	}
 
 	ret = rdma_bind_addr(cm_id, (struct sockaddr *)&addr_in);
@@ -1340,21 +1380,82 @@ static int nvmet_rdma_add_port(struct nvmet_port *port)
 		goto out_destroy_id;
 	}
 
+	atomic_set(&rdma_port->enabled, 1);
 	pr_info("enabling port %d (%pISpc)\n",
-		le16_to_cpu(port->disc_addr.portid), &addr_in);
-	port->priv = cm_id;
-	return 0;
+		le16_to_cpu(pb->disc_addr.portid), &addr_in);
+
+	return rdma_port;
 
 out_destroy_id:
 	rdma_destroy_id(cm_id);
-	return ret;
+out_port_disable:
+	mutex_lock(&nvmet_rdma_ports_mutex);
+	list_del_init(&rdma_port->node);
+	mutex_unlock(&nvmet_rdma_ports_mutex);
+
+	nvmet_port_binding_disable(pb, &rdma_port->port);
+	kfree(rdma_port);
+	return ERR_PTR(ret);
 }
 
-static void nvmet_rdma_remove_port(struct nvmet_port *port)
+static void nvmet_rmda_destroy_cmid(struct kref *ref)
 {
-	struct rdma_cm_id *cm_id = port->priv;
+	struct nvmet_rdma_port *rdma_port = container_of(ref,
+				struct nvmet_rdma_port, ref);
+	struct rdma_cm_id *cm_id = rdma_port->cm_id;
+
+	mutex_lock(&nvmet_rdma_ports_mutex);
+	atomic_set(&rdma_port->enabled, 0);
+	list_del_init(&rdma_port->node);
+	mutex_unlock(&nvmet_rdma_ports_mutex);
 
 	rdma_destroy_id(cm_id);
+	kfree(rdma_port);
+}
+
+static int nvmet_rdma_add_port(struct nvmet_port_binding *pb)
+{
+	struct nvmet_rdma_port *rdma_port;
+	struct nvmf_disc_rsp_page_entry *pb_addr = &pb->disc_addr;
+
+	mutex_lock(&nvmet_rdma_ports_mutex);
+	list_for_each_entry(rdma_port, &nvmet_rdma_ports, node) {
+		struct nvmf_disc_rsp_page_entry *port_addr = &rdma_port->port_addr;
+
+		if (!strcmp(port_addr->traddr, pb_addr->traddr) &&
+		    !strcmp(port_addr->trsvcid, pb_addr->trsvcid)) {
+			if (!atomic_read(&rdma_port->enabled)) {
+				mutex_unlock(&nvmet_rdma_ports_mutex);
+				return -ENODEV;
+			}
+			kref_get(&rdma_port->ref);
+			mutex_unlock(&nvmet_rdma_ports_mutex);
+
+			nvmet_port_binding_enable(pb, &rdma_port->port);
+			return 0;
+		}
+	}
+	mutex_unlock(&nvmet_rdma_ports_mutex);
+
+	rdma_port = nvmet_rdma_listen_cmid(pb);
+	if (IS_ERR(rdma_port))
+		return PTR_ERR(rdma_port);
+
+	return 0;
+}
+
+static void nvmet_rdma_remove_port(struct nvmet_port_binding *pb)
+{
+	struct nvmet_port *port = pb->port;
+	struct nvmet_rdma_port *rdma_port;
+
+	if (!port)
+		return;
+
+	rdma_port = container_of(port, struct nvmet_rdma_port, port);
+	nvmet_port_binding_disable(pb, &rdma_port->port);
+
+	kref_put(&rdma_port->ref, nvmet_rmda_destroy_cmid);
 }
 
 static struct nvmet_fabrics_ops nvmet_rdma_ops = {
