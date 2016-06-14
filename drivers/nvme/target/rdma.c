@@ -1438,10 +1438,7 @@ static int nvmet_rdma_add_port(struct nvmet_port_binding *pb)
 	mutex_unlock(&nvmet_rdma_ports_mutex);
 
 	rdma_port = nvmet_rdma_listen_cmid(pb);
-	if (IS_ERR(rdma_port))
-		return PTR_ERR(rdma_port);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(rdma_port);
 }
 
 static void nvmet_rdma_remove_port(struct nvmet_port_binding *pb)
