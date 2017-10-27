@@ -1746,7 +1746,7 @@ void transport_generic_request_failure(struct se_cmd *cmd,
 	     cmd->transport_complete_callback)
 		cmd->transport_complete_callback(cmd, false, &post_ret);
 
-	if (transport_check_aborted_status(cmd, 1))
+	if (transport_check_aborted_status(cmd))
 		return;
 
 	switch (sense_reason) {
@@ -1950,8 +1950,6 @@ static bool target_handle_task_attr(struct se_cmd *cmd)
 	return true;
 }
 
-static int __transport_check_aborted_status(struct se_cmd *, int);
-
 void target_execute_cmd(struct se_cmd *cmd)
 {
 	/*
@@ -1961,10 +1959,6 @@ void target_execute_cmd(struct se_cmd *cmd)
 	 * If the received CDB has aleady been aborted stop processing it here.
 	 */
 	spin_lock_irq(&cmd->t_state_lock);
-	if (__transport_check_aborted_status(cmd, 1)) {
-		spin_unlock_irq(&cmd->t_state_lock);
-		return;
-	}
 	if (cmd->transport_state & (CMD_T_STOP | CMD_T_ABORTED)) {
 		pr_debug("%s:%d CMD_T_STOP|CMD_T_ABORTED for ITT: 0x%08llx\n",
 			__func__, __LINE__, cmd->tag);
@@ -3237,57 +3231,16 @@ transport_send_check_condition_and_sense(struct se_cmd *cmd,
 }
 EXPORT_SYMBOL(transport_send_check_condition_and_sense);
 
-static int __transport_check_aborted_status(struct se_cmd *cmd, int send_status)
-	__releases(&cmd->t_state_lock)
-	__acquires(&cmd->t_state_lock)
+int transport_check_aborted_status(struct se_cmd *cmd)
 {
 	int ret;
 
-	assert_spin_locked(&cmd->t_state_lock);
-	WARN_ON_ONCE(!irqs_disabled());
-
+	spin_lock_irq(&cmd->t_state_lock);
 	ret = (cmd->transport_state & (CMD_T_STOP | CMD_T_ABORTED));
-	if (ret) {
-		complete_all(&cmd->t_transport_stop_comp);
-		return 0;
-	}
-
-	if (!(cmd->transport_state & CMD_T_ABORTED))
-		return 0;
-
-	/*
-	 * If cmd has been aborted but either no status is to be sent or it has
-	 * already been sent, just return
-	 */
-	if (!send_status || !(cmd->se_cmd_flags & SCF_SEND_DELAYED_TAS)) {
-		if (send_status)
-			cmd->se_cmd_flags |= SCF_SEND_DELAYED_TAS;
-		return 1;
-	}
-
-	pr_debug("Sending delayed SAM_STAT_TASK_ABORTED status for CDB:"
-		" 0x%02x ITT: 0x%08llx\n", cmd->t_task_cdb[0], cmd->tag);
-
-	cmd->se_cmd_flags &= ~SCF_SEND_DELAYED_TAS;
-	cmd->scsi_status = SAM_STAT_TASK_ABORTED;
-	trace_target_cmd_complete(cmd);
-
 	spin_unlock_irq(&cmd->t_state_lock);
-	ret = cmd->se_tfo->queue_status(cmd);
+
 	if (ret)
-		transport_handle_queue_full(cmd, cmd->se_dev, ret, false);
-	spin_lock_irq(&cmd->t_state_lock);
-
-	return 1;
-}
-
-int transport_check_aborted_status(struct se_cmd *cmd, int send_status)
-{
-	int ret;
-
-	spin_lock_irq(&cmd->t_state_lock);
-	ret = __transport_check_aborted_status(cmd, send_status);
-	spin_unlock_irq(&cmd->t_state_lock);
+		complete_all(&cmd->t_transport_stop_comp);
 
 	return ret;
 }

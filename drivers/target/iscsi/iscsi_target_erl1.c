@@ -951,8 +951,7 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 			 * happen after unsolicited data out finishes signaled
 			 * by ISCSI_FLAG_CMD_FINAL in __iscsit_check_dataout_hdr()
 			 */
-			if (transport_check_aborted_status(se_cmd,
-						(cmd->unsolicited_data == 0)))
+			if (transport_check_aborted_status(se_cmd))
 				return 0;
 			/*
 			 * Otherwise send CHECK_CONDITION and sense for
@@ -978,7 +977,7 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 				 * Check if CMD_T_ABORTED for a WRITE has occured
 				 * and no more unsolicitied data is expected.
 				 */
-				if (transport_check_aborted_status(se_cmd, 1))
+				if (transport_check_aborted_status(se_cmd))
 					return 0;
 
 				iscsit_set_dataout_sequence_values(cmd);
@@ -997,7 +996,7 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 			 * Check if CMD_T_ABORTED for a WRITE has occured
 			 * and no more nsolicitied data is expected.
 			 */
-			if (transport_check_aborted_status(se_cmd, 1))
+			if (transport_check_aborted_status(se_cmd))
 				return 0;
 
 			iscsit_set_unsoliticed_dataout(cmd);
