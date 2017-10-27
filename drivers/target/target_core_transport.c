@@ -1965,8 +1965,8 @@ void target_execute_cmd(struct se_cmd *cmd)
 		spin_unlock_irq(&cmd->t_state_lock);
 		return;
 	}
-	if (cmd->transport_state & CMD_T_STOP) {
-		pr_debug("%s:%d CMD_T_STOP for ITT: 0x%08llx\n",
+	if (cmd->transport_state & (CMD_T_STOP | CMD_T_ABORTED)) {
+		pr_debug("%s:%d CMD_T_STOP|CMD_T_ABORTED for ITT: 0x%08llx\n",
 			__func__, __LINE__, cmd->tag);
 
 		spin_unlock_irq(&cmd->t_state_lock);
@@ -2534,8 +2534,8 @@ transport_generic_new_cmd(struct se_cmd *cmd)
 	 * Determine if frontend context caller is requesting the stopping of
 	 * this command for frontend exceptions.
 	 */
-	if (cmd->transport_state & CMD_T_STOP) {
-		pr_debug("%s:%d CMD_T_STOP for ITT: 0x%08llx\n",
+	if (cmd->transport_state & (CMD_T_STOP | CMD_T_ABORTED)) {
+		pr_debug("%s:%d CMD_T_STOP|CMD_T_ABORTED for ITT: 0x%08llx\n",
 			 __func__, __LINE__, cmd->tag);
 
 		spin_unlock_irqrestore(&cmd->t_state_lock, flags);
@@ -2971,11 +2971,16 @@ __transport_wait_for_tasks(struct se_cmd *cmd, bool fabric_stop,
 	    !(cmd->se_cmd_flags & SCF_SCSI_TMR_CDB))
 		return false;
 
-	if (!(cmd->transport_state & CMD_T_ACTIVE))
+	if (!(cmd->transport_state & CMD_T_ACTIVE) &&
+	    (!(cmd->transport_state & CMD_T_PRE_EXECUTE) && !(*aborted)))
 		return false;
 
-	if (fabric_stop && *aborted)
+	if (fabric_stop && *aborted) {
+		if (cmd->transport_state & CMD_T_PRE_EXECUTE)
+			complete_all(&cmd->t_transport_stop_comp);
+
 		return false;
+	}
 
 	cmd->transport_state |= CMD_T_STOP;
 
@@ -2988,7 +2993,7 @@ __transport_wait_for_tasks(struct se_cmd *cmd, bool fabric_stop,
 		target_show_cmd("wait for tasks: ", cmd);
 
 	spin_lock_irqsave(&cmd->t_state_lock, *flags);
-	cmd->transport_state &= ~(CMD_T_ACTIVE | CMD_T_STOP);
+	cmd->transport_state &= ~(CMD_T_ACTIVE | CMD_T_STOP | CMD_T_PRE_EXECUTE);
 
 	pr_debug("wait_for_tasks: Stopped wait_for_completion(&cmd->"
 		 "t_transport_stop_comp) for ITT: 0x%08llx\n", cmd->tag);
@@ -3241,8 +3246,15 @@ static int __transport_check_aborted_status(struct se_cmd *cmd, int send_status)
 	assert_spin_locked(&cmd->t_state_lock);
 	WARN_ON_ONCE(!irqs_disabled());
 
+	ret = (cmd->transport_state & (CMD_T_STOP | CMD_T_ABORTED));
+	if (ret) {
+		complete_all(&cmd->t_transport_stop_comp);
+		return 0;
+	}
+
 	if (!(cmd->transport_state & CMD_T_ABORTED))
 		return 0;
+
 	/*
 	 * If cmd has been aborted but either no status is to be sent or it has
 	 * already been sent, just return
@@ -3293,25 +3305,6 @@ void transport_send_task_abort(struct se_cmd *cmd)
 	}
 	spin_unlock_irqrestore(&cmd->t_state_lock, flags);
 
-	/*
-	 * If there are still expected incoming fabric WRITEs, we wait
-	 * until until they have completed before sending a TASK_ABORTED
-	 * response.  This response with TASK_ABORTED status will be
-	 * queued back to fabric module by transport_check_aborted_status().
-	 */
-	if (cmd->data_direction == DMA_TO_DEVICE) {
-		if (cmd->se_tfo->write_pending_status(cmd) != 0) {
-			spin_lock_irqsave(&cmd->t_state_lock, flags);
-			if (cmd->se_cmd_flags & SCF_SEND_DELAYED_TAS) {
-				spin_unlock_irqrestore(&cmd->t_state_lock, flags);
-				goto send_abort;
-			}
-			cmd->se_cmd_flags |= SCF_SEND_DELAYED_TAS;
-			spin_unlock_irqrestore(&cmd->t_state_lock, flags);
-			return;
-		}
-	}
-send_abort:
 	cmd->scsi_status = SAM_STAT_TASK_ABORTED;
 
 	transport_lun_remove_cmd(cmd);
