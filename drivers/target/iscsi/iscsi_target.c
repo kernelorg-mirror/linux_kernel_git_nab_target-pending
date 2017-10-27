@@ -1475,45 +1475,44 @@ __iscsit_check_dataout_hdr(struct iscsi_conn *conn, void *buf,
 		/*
 		 * Special case for dealing with Unsolicited DataOUT
 		 * and Unsupported SAM WRITE Opcodes and SE resource allocation
-		 * failures;
+		 * failures.
 		 */
-
-		/* Something's amiss if we're not in WRITE_PENDING state... */
-		WARN_ON(se_cmd->t_state != TRANSPORT_WRITE_PENDING);
-		if (!(se_cmd->se_cmd_flags & SCF_SUPPORTED_SAM_OPCODE))
+		if (!(se_cmd->se_cmd_flags & SCF_SUPPORTED_SAM_OPCODE) ||
+		     (se_cmd->transport_state & CMD_T_ABORTED))
 			dump_unsolicited_data = 1;
 
 		if (dump_unsolicited_data) {
 			/*
-			 * Check if a delayed TASK_ABORTED status needs to
-			 * be sent now if the ISCSI_FLAG_CMD_FINAL has been
-			 * received with the unsolicited data out.
+			 * Check if CMD_T_ABORTED has occured and TMR code
+			 * needs to be notified when ISCSI_FLAG_CMD_FINAL
+			 * has been received for all outstanding unsolicited
+			 * data out.
 			 */
-			if (hdr->flags & ISCSI_FLAG_CMD_FINAL)
+			if (hdr->flags & ISCSI_FLAG_CMD_FINAL) {
 				iscsit_stop_dataout_timer(cmd);
+				transport_check_aborted_status(se_cmd, 1);
+			}
 
-			transport_check_aborted_status(se_cmd,
-					(hdr->flags & ISCSI_FLAG_CMD_FINAL));
 			return iscsit_dump_data_payload(conn, payload_length, 1);
 		}
 	} else {
 		/*
 		 * For the normal solicited data path:
 		 *
-		 * Check for a delayed TASK_ABORTED status and dump any
-		 * incoming data out payload if one exists.  Also, when the
+		 * Check if CMD_T_ABORTED has occured, and incoming data out
+		 * payload must be dumped if one exists.  Also, when the
 		 * ISCSI_FLAG_CMD_FINAL is set to denote the end of the current
 		 * data out sequence, we decrement outstanding_r2ts.  Once
-		 * outstanding_r2ts reaches zero, go ahead and send the delayed
-		 * TASK_ABORTED status.
+		 * outstanding_r2ts reaches zero, go ahead and send notification
+		 * back to TMR code.
 		 */
 		if (se_cmd->transport_state & CMD_T_ABORTED) {
-			if (hdr->flags & ISCSI_FLAG_CMD_FINAL)
+			if (hdr->flags & ISCSI_FLAG_CMD_FINAL) {
 				if (--cmd->outstanding_r2ts < 1) {
 					iscsit_stop_dataout_timer(cmd);
-					transport_check_aborted_status(
-							se_cmd, 1);
+					transport_check_aborted_status(se_cmd, 1);
 				}
+			}
 
 			return iscsit_dump_data_payload(conn, payload_length, 1);
 		}

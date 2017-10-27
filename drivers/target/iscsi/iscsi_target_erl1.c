@@ -944,14 +944,15 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 			}
 			spin_unlock_bh(&cmd->istate_lock);
 			/*
-			 * Determine if delayed TASK_ABORTED status for WRITEs
-			 * should be sent now if no unsolicited data out
-			 * payloads are expected, or if the delayed status
-			 * should be sent after unsolicited data out with
-			 * ISCSI_FLAG_CMD_FINAL set in iscsi_handle_data_out()
+			 * Determine if CMD_T_ABORTED for WRITEs has occured
+			 * and no unsolicited data out payload is expected.
+			 *
+			 * Otherwise, check + completion of CMD_T_ABORTED will
+			 * happen after unsolicited data out finishes signaled
+			 * by ISCSI_FLAG_CMD_FINAL in __iscsit_check_dataout_hdr()
 			 */
 			if (transport_check_aborted_status(se_cmd,
-					(cmd->unsolicited_data == 0)) != 0)
+						(cmd->unsolicited_data == 0)))
 				return 0;
 			/*
 			 * Otherwise send CHECK_CONDITION and sense for
@@ -972,15 +973,12 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 			}
 			spin_unlock_bh(&cmd->istate_lock);
 
-			if (!(cmd->cmd_flags &
-					ICF_NON_IMMEDIATE_UNSOLICITED_DATA)) {
+			if (!(cmd->cmd_flags & ICF_NON_IMMEDIATE_UNSOLICITED_DATA)) {
 				/*
-				 * Send the delayed TASK_ABORTED status for
-				 * WRITEs if no more unsolicitied data is
-				 * expected.
+				 * Check if CMD_T_ABORTED for a WRITE has occured
+				 * and no more unsolicitied data is expected.
 				 */
-				if (transport_check_aborted_status(se_cmd, 1)
-						!= 0)
+				if (transport_check_aborted_status(se_cmd, 1))
 					return 0;
 
 				iscsit_set_dataout_sequence_values(cmd);
@@ -996,10 +994,10 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 		if ((cmd->data_direction == DMA_TO_DEVICE) &&
 		    !(cmd->cmd_flags & ICF_NON_IMMEDIATE_UNSOLICITED_DATA)) {
 			/*
-			 * Send the delayed TASK_ABORTED status for WRITEs if
-			 * no more nsolicitied data is expected.
+			 * Check if CMD_T_ABORTED for a WRITE has occured
+			 * and no more nsolicitied data is expected.
 			 */
-			if (transport_check_aborted_status(se_cmd, 1) != 0)
+			if (transport_check_aborted_status(se_cmd, 1))
 				return 0;
 
 			iscsit_set_unsoliticed_dataout(cmd);
